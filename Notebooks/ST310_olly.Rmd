@@ -1,0 +1,459 @@
+---
+title: "Apollo ST310 Group Project"
+output:
+  html_document:
+    toc: yes
+date: "21-03-2023"
+---
+
+# Import libraries
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(yardstick)
+library(tidymodels)
+library(skimr)
+library(ranger)
+library(vip)
+```
+# EDA & Data Manipulation
+
+## Import data
+
+```{r}
+# Import and view head of training data
+path <- "/Users/Ollym/OneDrive/Documents/GitHub/ST310-Group-Project/Data/Stellar-Classification-Dataset.csv"
+raw_df <- read.csv(path)
+```
+
+```{r}
+# Make "Class" the first column
+#reordered_raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+#head(reordered_raw_df)
+```
+
+## Distribution of `class`
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+```{r}
+raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+head(raw_df)
+```
+
+
+
+```{r}
+# Filter the data by class and subsample
+#galaxy_df <- reordered_raw_df[reordered_raw_df$class == "GALAXY", ]
+#subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 1000, replace = FALSE),]
+
+#qso_df <- reordered_raw_df[reordered_raw_df$class == "QSO", ]
+#subsampled_qso_df <- qso_df[sample(nrow(qso_df), size = 1000, replace = FALSE),]
+
+#star_df <- reordered_raw_df[reordered_raw_df$class == "STAR", ]
+#subsampled_star_df <- star_df[sample(nrow(star_df), size = 1000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+#new_df <- rbind(subsampled_galaxy_df, subsampled_qso_df, subsampled_star_df)
+#head(new_df)
+```
+
+## Re-labelling `class`
+
+```{r}
+raw_df[raw_df == 'QSO' | raw_df == 'STAR'] <- 'OTHER'
+```
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Subsample the data
+
+```{r}
+# Filter the data by class and subsample
+galaxy_df <- raw_df[raw_df$class == "GALAXY", ]
+subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 40000, replace = FALSE),]
+
+other_df <- raw_df[raw_df$class == "OTHER", ]
+subsampled_other_df <- other_df[sample(nrow(other_df), size = 40000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+df <- rbind(subsampled_galaxy_df, subsampled_other_df)
+dim(df)
+```
+
+```{r}
+ggplot(df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+
+## Summary statistics
+
+```{r}
+df %>% 
+  skimr::skim(colnames(df))
+```
+# Model Recipe
+
+## Train/Test Split
+
+```{r}
+set.seed(222)
+# Put 80% of the data into the training set 
+data_split <- initial_split(df, prop = 0.8)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## Create our recipe
+
+```{r}
+# Declare the ID variables
+IDs <- c("obj_ID", "run_ID", "rerun_ID", "cam_col", "field_ID", "spec_obj_ID", "plate", "MJD", "fiber_ID")
+```
+
+```{r}
+# Define our model, and exclude the ID variables
+recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep()
+```
+
+```{r}
+test_data <- recipe %>%
+  bake(test_data)
+```
+
+```{r}
+train_data <- juice(recipe)
+```
+
+```{r}
+# Summary of the recipe
+summary(recipe)
+```
+
+# Logisitic Regression Model
+
+```{r}
+# Define our logistic regression model
+logistic_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+```
+
+## Workflow
+
+```{r}
+# Create our workflow
+logistic_wflow <- 
+  workflow() %>% 
+  add_model(logistic_model) %>% 
+  add_recipe(recipe)
+
+logistic_wflow
+```
+
+## Fit and explore the model
+
+```{r}
+# Fit the model
+logistic_fit <- 
+  logistic_wflow %>% 
+  fit(data = train_data)
+```
+
+```{r}
+logistic_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+```{r}
+logistic_augment <- 
+  augment(logistic_fit, test_data, type = "prob")
+```
+
+## Predictions
+
+```{r}
+# DataFrame of prediction probabilities
+pred_df <- logistic_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+pred_df
+```
+
+
+```{r}
+# Distribution of predictions
+ggplot(pred_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+```
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+logistic_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+```{r}
+# Area Under Curve (AUC)
+logistic_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+### Evaluation Metric: Accuracy Score
+
+```{r}
+accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+```
+#Include Confusion Matrix
+
+
+# Step 3 Tree Model + Interpretation
+
+
+# Random Forest Model
+
+## Workflow
+
+We fit a random forest model, with the intention of achieving a lower mis-classification rate. We tune the `mtry` variable, which describes the size of the random sample of variables at each tree split.
+
+```{r}
+#Defines Model
+rf_model <- rand_forest(mode = "classification", trees = 20, mtry = tune()) %>% 
+  set_engine("ranger", importance = "impurity")
+```
+
+```{r}
+#Defines Workflow
+rf_workflow <- 
+  workflow() %>% 
+  add_model(rf_model) %>% ## Add newly defined model
+  add_recipe(recipe) ## Adds recipe specified earlier
+```
+
+To tune the variables, we use a 2-fold cross validation. Any larger and it takes an unreasonable amount of time to compute.
+```{r}
+#Defines cross validation 
+r_cv <- vfold_cv(train_data, v = 2)
+```
+
+
+## Fit model and examine variable importance
+
+To visualise variable importance, which will inform interaction terms later, we fit the model to the dataframe.
+
+```{r}
+#Fits model for variables importance
+rf_workflow %>% 
+  fit(df) %>% ## Fits model
+  extract_fit_parsnip() %>% ## Extracts coefficient intercepts 
+  vip(num_features = 8) + ## Extracts top 8
+  labs(title = "Random forest variable importance") ##Labels graph
+```
+
+## Predictions
+
+To make predictions, we fit the model with a tune grid, which will allow us to cross validate and choose the best `mtry`.
+
+```{r}
+# Fit the model
+rf_fit <- tune_grid( 
+  rf_workflow, # Specifies Workflow
+  r_cv, #Specifies Cross validation procedure
+  metrics = metric_set(roc_auc) ## selects based on roc_auc
+)
+```
+
+We now select the model with best results
+```{r}
+rf_best <- rf_fit %>%
+  select_best()
+```
+
+And finalise the model.
+```{r}
+rf_final <- 
+  finalize_model(
+    rf_model,
+    rf_best)
+rf_final
+```
+We now fit the data to the test and extract the performance statistics
+```{r}
+#Fits final model
+rf_test <- 
+  rf_workflow %>%
+  update_model(rf_final) %>%
+  last_fit(data_split) %>%
+  collect_metrics()
+
+rf_test
+```
+
+# Random Forest With Interaction Terms 
+
+In order to increase dimensionality of the data, we will add interaction terms between the variables.
+
+## Redshift Interaction Analysis
+
+Since redshift was the most important variable according to previous analysis, we will add one interaction for redshift, multiplied by each predictor.
+
+```{r}
+#Defines Recipe
+red_recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>% 
+  step_center(all_predictors(), -all_outcomes()) %>% ## Normalises
+  step_scale(all_predictors(), -all_outcomes()) %>%  ## ----------
+  step_interact(terms = ~ redshift:all_predictors()) %>% ## Adds interaction terms
+  prep()
+```
+
+We fit a model based on `mtry = 4`, since this was the tuned parameter in the previous case.
+```{r}
+#Defines Model
+rf_red_model <- rand_forest(mode = "classification", mtry = 3, trees = 20) %>% 
+  set_engine("ranger", importance = "impurity") 
+
+#Defines Workflow
+rf_red_workflow <- 
+  workflow() %>% 
+  add_model(rf_red_model) %>% #Specifies model  
+  add_recipe(red_recipe) #Specifies recipe
+
+#Fits model to find variable importance as before
+rf_red_workflow %>% 
+  fit(df) %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 8) +
+  labs(title = "Random forest variable importance")
+
+# Fit the model for predictions
+rf_red_fit <- 
+  rf_red_workflow %>% 
+  fit(data = train_data)
+
+#Augments model based on test data
+rf_red_augment <- 
+  augment(rf_red_fit, test_data, type = "prob")
+
+#DataFrame of prediction probabilities
+rf_red_pred_df <- rf_red_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+#Prediction probability dataframe
+rf_red_pred_df
+```
+
+```{r}
+#Plots ROC curve
+rf_red_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+
+```{r}
+#Calculates accuracy
+accuracy(rf_red_pred_df, as.factor(class), as.factor(.pred_class))
+```
+
+## All Predictor Interaction Analysis
+
+Next, to increase dimensionality further, we will add all possible two-way predictor variables.
+```{r}
+#Defines new recipe
+i_recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  step_interact(terms = ~ all_predictors():all_predictors()) %>% #Adds all two-way predictor variables
+  prep()
+```
+
+And we now run and explore the model. 
+
+```{r}
+#Defines Model
+rf_i_model <- rand_forest(mode = "classification", mtry = 3, trees = 20) %>% 
+  set_engine("ranger", importance = "impurity")
+
+#Defines Workflow
+rf_i_workflow <- 
+  workflow() %>% 
+  add_model(rf_i_model) %>% 
+  add_recipe(i_recipe)
+
+#Runs model for variable importance
+rf_i_workflow %>% 
+  fit(df) %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 8) +
+  labs(title = "Random forest variable importance")
+
+#Fits the model for predictions
+rf_i_fit <- 
+  rf_i_workflow %>% 
+  fit(data = train_data)
+
+#Augments model based on new data 
+rf_i_augment <- 
+  augment(rf_i_fit, test_data, type = "prob")
+
+#DataFrame of prediction probabilities
+rf_i_pred_df <- rf_i_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+#Prints DataFrame of prediction probabilities
+rf_i_pred_df
+```
+
+```{r}
+#Calculates and plots ROC curve
+rf_i_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+
+```{r}
+#Calculates accuracy
+accuracy(rf_i_pred_df, as.factor(class), as.factor(.pred_class))
+```
+The lowest mis-classification rate we achieve is 2.4%, with the forest with no interaction terms. 
