@@ -1,0 +1,302 @@
+---
+title: "Apollo ST310 Group Project"
+output:
+  html_document:
+    toc: yes
+date: "21-03-2023"
+---
+
+# Import libraries
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(yardstick)
+library(tidymodels)
+library(skimr)
+library(ranger)
+library(vip)
+```
+# EDA & Data Manipulation
+
+## Import data
+
+```{r}
+# Import and view head of training data
+path <- "/Users/alvarodda/Desktop/ST310 GP/star_classification.csv"
+raw_df <- read.csv(path)
+```
+
+```{r}
+# Make "Class" the first column
+#reordered_raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+#head(reordered_raw_df)
+```
+
+## Distribution of `class`
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+```{r}
+raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+head(raw_df)
+```
+
+
+
+```{r}
+# Filter the data by class and subsample
+#galaxy_df <- reordered_raw_df[reordered_raw_df$class == "GALAXY", ]
+#subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 1000, replace = FALSE),]
+
+#qso_df <- reordered_raw_df[reordered_raw_df$class == "QSO", ]
+#subsampled_qso_df <- qso_df[sample(nrow(qso_df), size = 1000, replace = FALSE),]
+
+#star_df <- reordered_raw_df[reordered_raw_df$class == "STAR", ]
+#subsampled_star_df <- star_df[sample(nrow(star_df), size = 1000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+#new_df <- rbind(subsampled_galaxy_df, subsampled_qso_df, subsampled_star_df)
+#head(new_df)
+```
+
+## Re-labelling `class`
+
+```{r}
+raw_df[raw_df == 'QSO' | raw_df == 'STAR'] <- 'OTHER'
+```
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+```
+
+## Subsample the data
+
+```{r}
+# Filter the data by class and subsample
+galaxy_df <- raw_df[raw_df$class == "GALAXY", ]
+subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 40000, replace = FALSE),]
+
+other_df <- raw_df[raw_df$class == "OTHER", ]
+subsampled_other_df <- other_df[sample(nrow(other_df), size = 40000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+df <- rbind(subsampled_galaxy_df, subsampled_other_df)
+dim(df)
+```
+
+```{r}
+ggplot(df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+
+## Summary statistics
+
+```{r}
+df %>% 
+  skimr::skim(colnames(df))
+```
+# Model Recipe
+
+## Train/Test Split
+
+```{r}
+set.seed(222)
+# Put 80% of the data into the training set 
+data_split <- initial_split(df, prop = 0.8)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## Create our recipe
+
+```{r}
+# Declare the ID variables
+IDs <- c("obj_ID", "run_ID", "rerun_ID", "cam_col", "field_ID", "spec_obj_ID", "plate", "MJD", "fiber_ID")
+```
+
+```{r}
+# Define our model, and exclude the ID variables
+recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep()
+```
+```{r}
+test_data <- recipe %>%
+  bake(test_data)
+```
+
+```{r}
+train_data <- juice(recipe)
+```
+
+```{r}
+# Summary of the recipe
+summary(recipe)
+```
+
+# Logisitic Regression Model
+
+```{r}
+# Define our logistic regression model
+logistic_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+```
+
+## Workflow
+
+```{r}
+# Create our workflow
+logistic_wflow <- 
+  workflow() %>% 
+  add_model(logistic_model) %>% 
+  add_recipe(recipe)
+
+logistic_wflow
+```
+
+## Fit and explore the model
+
+```{r}
+# Fit the model
+logistic_fit <- 
+  logistic_wflow %>% 
+  fit(data = train_data)
+```
+
+```{r}
+logistic_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+```{r}
+logistic_augment <- 
+  augment(logistic_fit, test_data, type = "prob")
+```
+
+## Predictions
+
+```{r}
+# DataFrame of prediction probabilities
+pred_df <- logistic_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+pred_df
+```
+
+
+```{r}
+# Distribution of predictions
+ggplot(pred_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+```
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+logistic_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+```{r}
+# Area Under Curve (AUC)
+logistic_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+### Evaluation Metric: Accuracy Score
+
+```{r}
+accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+```
+
+```{r}
+binary_class_df <- df
+binary_class_df[binary_class_df == 'GALAXY'] <- 1
+binary_class_df[binary_class_df == 'OTHER'] <- 0
+#y <- as.factor(df$class)
+head(binary_class_df)
+```
+```{r}
+X <- binary_class_df[,c(3:9, 15)]
+X <- as.matrix(scale(X[1:8]))
+Y <- binary_class_df$class
+Y <- as.numeric(Y)
+Y <- as.matrix(Y)
+```
+
+```{r}
+# Define the logistic regression function
+logistic <- function(X, beta) {
+  p <- 1 / (1 + exp(-X %*% beta))
+  return(p)
+}
+
+# Define the gradient of the logistic regression function
+grad_logistic <- function(X, y, beta) {
+  n <- length(y)
+  p <- logistic(X, beta)
+  grad <- t(X) %*% (p - y) / n
+  return(grad)
+}
+
+# Define the loss function
+loss <- function(X, y, beta) {
+  n <- length(y)
+  p <- logistic(X, beta)
+  loss <- -sum(y * log(p) + (1 - y) * log(1 - p)) / n
+  return(loss)
+}
+
+# Implement the gradient descent algorithm with a learning rate schedule
+gradient_descent <- function(X, y, alpha, max_iter) {
+  beta <- rep(0, ncol(X))
+  for (i in 1:max_iter) {
+    alpha_i <- alpha / sqrt(i)  # learning rate schedule
+    beta <- beta - alpha_i * grad_logistic(X, y, beta)
+    previous_loss
+    print(paste0("Iteration ", i, ", Loss = ", loss(X, y, beta)))
+    if (loss(X, y, beta) == "NaN"){
+      return(beta)
+    } 
+  }
+  return(beta)
+}
+beta_final <- gradient_descent(X,Y,10,10000)
+
+```
+
+```{r}
+pred <-  1/(1+exp(-(X %*% beta_final)))
+pred <- ifelse(pred>0.5, 1,0)
+1-sum(abs(pred-Y))/nrow(pred)
+```
+
+
