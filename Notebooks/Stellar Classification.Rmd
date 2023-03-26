@@ -8,7 +8,7 @@ date: "21-03-2023"
 
 # Import libraries
 
-```{r setup, include=TRUE}
+```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(ggplot2)
 library(GGally)
@@ -203,7 +203,6 @@ pred_df <- logistic_augment %>%
 pred_df
 ```
 
-
 ```{r}
 # Distribution of predictions
 ggplot(pred_df,aes(x=factor(class))) +
@@ -264,7 +263,6 @@ rf_fit <-
   fit(data = train_data)
 ```
 
-
 ```{r}
 rf_augment <- 
   augment(rf_fit, test_data, type = "prob")
@@ -279,7 +277,6 @@ rf_pred_df <- rf_augment %>%
 ```{r}
 rf_pred_df
 ```
-
 
 ### Evaluation metric: ROC/AUC
 
