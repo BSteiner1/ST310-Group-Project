@@ -1,0 +1,260 @@
+---
+title: "Apollo ST310 Group Project"
+output:
+  html_document:
+    toc: yes
+date: "21-03-2023"
+---
+
+# Import libraries
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(yardstick)
+library(tidymodels)
+library(skimr)
+library(ranger)
+library(vip)
+```
+# EDA & Data Manipulation
+
+## Import data
+
+```{r}
+# Import and view head of training data
+path <- "../Data/Stellar-Classification-Dataset.csv"
+raw_df <- read.csv(path)
+```
+
+Overview of the raw data:
+```{r}
+raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+head(raw_df)
+```
+
+
+## Distribution of `class`
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Re-labelling `class`
+
+The distribution of classes is quite uneven, so since we want to use
+binary classification we combine the two smaller classes into one larger 
+`OTHER` class.
+
+```{r}
+raw_df[raw_df == 'QSO' | raw_df == 'STAR'] <- 'OTHER'
+```
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Subsample the data
+
+Since the class sizes are still quite uneven, we subsample the data to get
+even class sizes.
+
+```{r}
+# Filter the data by class and subsample
+galaxy_df <- raw_df[raw_df$class == "GALAXY", ]
+subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 40000, replace = FALSE),]
+
+other_df <- raw_df[raw_df$class == "OTHER", ]
+subsampled_other_df <- other_df[sample(nrow(other_df), size = 40000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+df <- rbind(subsampled_galaxy_df, subsampled_other_df)
+dim(df)
+```
+Updated plot of rebalanced classes
+```{r}
+ggplot(df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+
+## Summary statistics
+
+```{r}
+df %>% 
+  skimr::skim(colnames(df))
+```
+# Model Recipe
+
+## Train/Test Split
+Since we have a large dataset we use 80% of the data for training.
+
+```{r}
+set.seed(222)
+# Put 80% of the data into the training set 
+data_split <- initial_split(df, prop = 0.8)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## Create our recipe
+
+The dataset contains a lot of ID variable which do not contain useful information
+such as run_ID which is used to identify that specific scan.
+
+```{r}
+# Declare the ID variables
+IDs <- c("obj_ID", "run_ID", "rerun_ID", "cam_col", "field_ID", "spec_obj_ID", "plate", "MJD", "fiber_ID")
+```
+Next, we create a recipe that applies some pre-processing steps.
+```{r}
+# Define our model, and exclude the ID variables
+recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>% # ID's not treated as predictors
+  step_center(all_predictors(), -all_outcomes()) %>% # ensures mean 0
+  step_scale(all_predictors(), -all_outcomes()) %>% # ensures standard deviation of 1
+  prep()  # applies the pre-processing
+```
+A summary of which variables are treated as predictors.
+```{r}
+# Summary of the recipe
+summary(recipe)
+```
+
+This can then be extracted as follows
+```{r}
+train_data <- juice(recipe) # return variables from processed training data
+```
+
+We apply the same pre-processing to the test data.
+```{r}
+test_data <- recipe %>%
+  bake(test_data) # ensures that same pre-processing is used on test data.
+```
+
+
+
+
+# Logisitic Regression Model
+
+Since our data set involves classification, we use logistic regression as our
+baseline model. 
+
+```{r}
+# Define our logistic regression model
+logistic_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+```
+
+## Workflow
+
+```{r}
+# Create our workflow
+logistic_wflow <- 
+  workflow() %>% 
+  add_model(logistic_model) %>% 
+  add_recipe(recipe)
+
+logistic_wflow
+```
+
+## Fit and explore the model
+
+We create a a fitted model by appling the workflow.
+```{r}
+# Fit the model
+logistic_fit <- 
+  logistic_wflow %>% 
+  fit(data = train_data)
+```
+
+The fitted values from our model.
+```{r}
+logistic_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+Apply this fit to our test data
+```{r}
+logistic_augment <- 
+  augment(logistic_fit, test_data, type = "prob")
+```
+
+## Predictions
+
+Created predicted values and probabilities
+```{r}
+# DataFrame of prediction probabilities
+pred_df <- logistic_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+head(pred_df) 
+```
+
+
+```{r}
+# Distribution of predictions
+ggplot(pred_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of predicted classes", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+```
+
+## Evaluation of Model
+The main two metrics that we will use to compare our models are ROC/AUC 
+and accuracy.
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+logistic_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+```{r}
+# Area Under Curve (AUC)
+logistic_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+### Confusion Matrix
+```{r}
+conf_mat(pred_df, truth=class, estimate=.pred_class)
+
+```
+### Evaluation Metric: Accuracy Score
+
+```{r}
+accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+```
+For our baseline logistic regression, we get a misclassification rate of 
+approximately 20%. This will be used compare with the later models.
+
+
+
+
+
+
+
+
+
