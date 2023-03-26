@@ -24,7 +24,7 @@ library(vip)
 
 ```{r}
 # Import and view head of training data
-path <- "/Users/alvarodda/Desktop/ST310 GP/star_classification.csv"
+path <- "/Users/bbste/Documents/LSE/ST310/ST310-Group-Project/Data/Stellar-Classification-Dataset.csv"
 raw_df <- read.csv(path)
 ```
 
@@ -79,7 +79,6 @@ ggplot(raw_df,aes(x=factor(class))) +
 geom_bar() + 
 labs(title="Counts of Class Column", x="Class", y = "Count")+
 geom_text(aes(label=..count..),stat='count', vjust=-0.2)
-
 ```
 
 ## Subsample the data
@@ -237,8 +236,104 @@ logistic_augment %>%
 ```{r}
 accuracy(pred_df, as.factor(class), as.factor(.pred_class))
 ```
-#Include Confusion Matrix
 
+```{r}
+binary_class_df <- df
+binary_class_df[binary_class_df == 'GALAXY'] <- 1
+binary_class_df[binary_class_df == 'OTHER'] <- 0
+#y <- as.factor(df$class)
+head(binary_class_df)
+```
+
+```{r}
+# Create a matrix of predictor variables 
+X <- binary_class_df[,c(3:9, 15)]
+# Standardise all variables so units are more interpretable
+X <- as.matrix(scale(X[1:8]))
+#X <- as.matrix(X)
+head(X, 1)
+```
+
+```{r}
+Y <- binary_class_df$class
+Y <- as.numeric(Y)
+Y <- as.matrix(Y)
+```
+
+
+```{r}
+sigmoid <- function(x){
+   return( 1/(1+exp(-x)) )
+}
+```
+
+```{r}
+# Define the likelihood function
+neglogL <- function(X, Y, beta) {
+  sigmoid <- 1/(1+exp(-X %*% beta))
+  # Use loss function minus Binary Cross Entropy 
+  -sum(Y * log(sigmoid) + (1-Y) * log(1-sigmoid))
+}
+```
+
+```{r}
+numeric_grad <- function(X, Y, beta, h = 1e-06) {
+  # Approximate each coordinate of the gradient
+  numerator <- sapply(1:length(beta), function(j) {
+    H <- rep(0, length(beta))
+    H[j] <- h # step in coordinate j
+    neglogL(X, Y, beta + H) - neglogL(X, Y, beta - H)
+  })
+  numerator / (2*h)
+}
+```
+
+```{r}
+max_steps <- 50 # try ~3 for comparison
+beta_prev2 <- c(0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1) # random start
+#beta_prev2 <- c(mean(Y), cor(X[,-1], Y)) # "warm" start
+grad_prev2 <- numeric_grad(X, Y, beta_prev2)
+beta_prev1 <- beta_prev2 + 0.1 * grad_prev2 / sqrt(sum(grad_prev2^2))
+grad_prev1 <- numeric_grad(X, Y, beta_prev1)
+previous_loss <- neglogL(X, Y, beta_prev2)
+next_loss <- neglogL(X, Y, beta_prev1)
+steps <- 1
+next_loss
+```
+
+```{r}
+#previous_loss - 
+previous_loss - next_loss
+```
+
+
+```{r}
+tol <- 10 # (error) tolerance
+while(abs(previous_loss - next_loss) > tol){
+  # Compute BB step size
+  grad_diff <- grad_prev1 - grad_prev2
+  step_BB <- sum((beta_prev1 - beta_prev2) * grad_diff) / sum(grad_diff^2)
+  beta_prev2 <- beta_prev1
+  
+  # Update step
+  beta_prev1 <- beta_prev1 - abs(step_BB) * grad_prev1
+  
+  # Shift previous steps
+  grad_prev2 <- grad_prev1
+  grad_prev1 <- numeric_grad(X, Y, beta_prev1)  
+  previous_loss <- next_loss
+  next_loss <- neglogL(X, Y, beta_prev1)
+  
+  print(previous_loss - next_loss)
+  
+  # Print loss every 5 steps, track path, control loop
+  #if (round(steps/5) == steps/5) print(previous_loss)
+  #steps <- steps + 1
+  #beta_path[steps, 2] <- next_loss
+  #beta_path[steps, 3:ncol(beta_path)] <- beta_prev1
+  #if (steps > max_steps) break
+}
+```
 
 # Step 3 Tree Model + Interpretation
 
