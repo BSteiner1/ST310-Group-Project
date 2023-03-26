@@ -1,0 +1,471 @@
+---
+title: "Apollo ST310 Group Project"
+output:
+  html_document:
+    toc: yes
+date: "21-03-2023"
+---
+
+# Import libraries
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(yardstick)
+library(tidymodels)
+library(skimr)
+library(ranger)
+library(vip)
+```
+# EDA & Data Manipulation
+
+## Import data
+
+```{r}
+# Import and view head of training data
+path <- "/Users/alvarodda/Desktop/ST310 GP/star_classification.csv"
+raw_df <- read.csv(path)
+```
+
+```{r}
+# Make "Class" the first column
+#reordered_raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+#head(reordered_raw_df)
+```
+
+## Distribution of `class`
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+```{r}
+raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+head(raw_df)
+```
+
+
+
+```{r}
+# Filter the data by class and subsample
+#galaxy_df <- reordered_raw_df[reordered_raw_df$class == "GALAXY", ]
+#subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 1000, replace = FALSE),]
+
+#qso_df <- reordered_raw_df[reordered_raw_df$class == "QSO", ]
+#subsampled_qso_df <- qso_df[sample(nrow(qso_df), size = 1000, replace = FALSE),]
+
+#star_df <- reordered_raw_df[reordered_raw_df$class == "STAR", ]
+#subsampled_star_df <- star_df[sample(nrow(star_df), size = 1000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+#new_df <- rbind(subsampled_galaxy_df, subsampled_qso_df, subsampled_star_df)
+#head(new_df)
+```
+
+## Re-labelling `class`
+
+```{r}
+raw_df[raw_df == 'QSO' | raw_df == 'STAR'] <- 'OTHER'
+```
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Subsample the data
+
+```{r}
+# Filter the data by class and subsample
+galaxy_df <- raw_df[raw_df$class == "GALAXY", ]
+subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 40000, replace = FALSE),]
+
+other_df <- raw_df[raw_df$class == "OTHER", ]
+subsampled_other_df <- other_df[sample(nrow(other_df), size = 40000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+df <- rbind(subsampled_galaxy_df, subsampled_other_df)
+dim(df)
+```
+
+```{r}
+ggplot(df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+
+## Summary statistics
+
+```{r}
+df %>% 
+  skimr::skim(colnames(df))
+```
+# Model Recipe
+
+## Train/Test Split
+
+```{r}
+set.seed(222)
+# Put 80% of the data into the training set 
+data_split <- initial_split(df, prop = 0.8)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## Create our recipe
+
+```{r}
+# Declare the ID variables
+IDs <- c("obj_ID", "run_ID", "rerun_ID", "cam_col", "field_ID", "spec_obj_ID", "plate", "MJD", "fiber_ID")
+```
+
+```{r}
+# Define our model, and exclude the ID variables
+recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  prep()
+```
+```{r}
+test_data <- recipe %>%
+  bake(test_data)
+```
+
+```{r}
+train_data <- juice(recipe)
+```
+
+```{r}
+# Summary of the recipe
+summary(recipe)
+```
+
+# Logisitic Regression Model
+
+```{r}
+# Define our logistic regression model
+logistic_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+```
+
+## Workflow
+
+```{r}
+# Create our workflow
+logistic_wflow <- 
+  workflow() %>% 
+  add_model(logistic_model) %>% 
+  add_recipe(recipe)
+
+logistic_wflow
+```
+
+## Fit and explore the model
+
+```{r}
+# Fit the model
+logistic_fit <- 
+  logistic_wflow %>% 
+  fit(data = train_data)
+```
+
+```{r}
+logistic_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+```{r}
+logistic_augment <- 
+  augment(logistic_fit, test_data, type = "prob")
+```
+
+## Predictions
+
+```{r}
+# DataFrame of prediction probabilities
+pred_df <- logistic_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+pred_df
+```
+
+
+```{r}
+# Distribution of predictions
+ggplot(pred_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+```
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+logistic_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+```{r}
+# Area Under Curve (AUC)
+logistic_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+### Evaluation Metric: Accuracy Score
+
+```{r}
+accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+```
+#Include Confusion Matrix
+
+
+# Classification Tree
+```{r}
+library(tree)
+#install.packages("rpart.plot")
+library(rpart.plot)
+
+tree_model <- decision_tree() %>% # We create the Classification Decision Tree
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+tree_workflow <- # We create a Workflow with the Tree model and our previous recipe
+  workflow() %>% 
+  add_model(tree_model) %>% 
+  add_recipe(recipe)
+
+tree_fit <-  # We fit the training data to our model
+  tree_workflow %>% 
+  fit(data = train_data)
+
+```
+
+
+```{r}
+tree_fit %>% # Plotting the tree through rpart package
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+```{r}
+augment(tree_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions.
+  accuracy(truth = as.factor(class), estimate = .pred_class)
+```
+
+
+# Classification Tree With Tuning
+
+```{r}
+folds <- vfold_cv(train_data) #We partition our data into 10 folds for CV.
+
+tree_workflow_tuning<- # New workflow for the tuning.
+  workflow() %>% 
+  add_model(tree_model %>% set_args(cost_complexity = tune())) %>% # We establish that the parameter we want to tune is the cost complexity of the classification tree.
+  add_recipe(recipe)
+
+#We create a parameter grid that takes 5 values from 0.001 to 0.01
+param_grid <- grid_regular(cost_complexity(range = c(-3, -2)), levels = 5) 
+
+#We tune the cost complexity parameter of out decision tree for the 10 CV for the values in the parameter grid.
+tuning_results <- tune_grid(
+  tree_workflow_tuning,
+  resamples = folds, 
+  grid = param_grid, 
+  metrics = metric_set(accuracy))
+
+#Accuracy results for each value of the parameter
+autoplot(tuning_results)
+```
+```{r}
+best_complexity <- select_best(tuning_results) #We select the best value of the paremeter (in terms of accuracy)
+
+final_tree <- finalize_workflow(tree_workflow_tuning, best_complexity) %>% #Refitting the decision tree with the best parameter
+  fit(data = train_data)
+
+final_tree %>% #Plotting the new tree
+  extract_fit_engine() %>%
+  rpart.plot()
+
+```
+```{r}
+augment(final_tree, new_data = test_data) %>% #Accuracy of the new tree on the test data
+  accuracy(truth = as.factor(class), estimate = .pred_class)
+```
+
+```{r}
+augment(final_tree, new_data = test_data) %>% #Confusion Matrix of the final tree with the test data
+  conf_mat(truth = class, estimate = .pred_class) 
+```
+
+
+# Quadratic Discriminant Analysis
+
+```{r}
+library(discrim)
+qda_model <- discrim_quad() %>% #We create the Quadratic Discriminant Analysis model
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+qda_workflow <- # We create a Workflow with QDA model and our previous recipe
+  workflow() %>% 
+  add_model(qda_model) %>% 
+  add_recipe(recipe)
+
+qda_fit <-  # We fit the QDA model with the training data
+  qda_workflow %>% 
+  fit(data = train_data)
+
+augment(qda_fit, new_data = test_data) %>% #Confusion Matrix on the test data.
+  conf_mat(truth = class, estimate = .pred_class) 
+
+augment(qda_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions on the test data
+  accuracy(truth = class, estimate = .pred_class) 
+```
+
+# Linear Discriminant Analysis
+
+```{r}
+lda_model <- discrim_linear() %>% #We create the Linear Discriminant Analysis model
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+lda_workflow <-  # We create a Workflow with the LDA model and our previous recipe
+  workflow() %>% 
+  add_model(lda_model) %>% 
+  add_recipe(recipe)
+
+lda_fit <-  # We fit the LDA model with the training data
+  lda_workflow %>% 
+  fit(data = train_data)
+
+augment(lda_fit, new_data = test_data) %>% # Confusion Matrix on the test data.
+  conf_mat(truth = class, estimate = .pred_class) 
+
+augment(lda_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions on the test data
+  accuracy(truth = class, estimate = .pred_class) 
+```
+
+
+# Random Forest Model
+
+## Create model
+```{r}
+rf_model <- rand_forest(mode = "classification", trees = 20) %>% 
+  set_engine("ranger", importance = "impurity")
+```
+
+```{r}
+rf_workflow <- 
+  workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(recipe)
+```
+
+## Fit model and examine variable importance
+
+```{r}
+rf_workflow %>% 
+  fit(df) %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 8) +
+  labs(title = "Random forest variable importance")
+```
+
+## Predictions
+
+```{r}
+# Fit the model
+rf_fit <- 
+  rf_workflow %>% 
+  fit(data = train_data)
+```
+
+
+```{r}
+rf_augment <- 
+  augment(rf_fit, test_data, type = "prob")
+```
+
+```{r}
+# DataFrame of prediction probabilities
+rf_pred_df <- rf_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+rf_pred_df
+```
+
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+rf_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+
+```{r}
+# Area Under Curve (AUC)
+rf_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+
+### Evaluation Metric: Accuracy Score
+
+```{r}
+accuracy(rf_pred_df, as.factor(class), as.factor(.pred_class))
+```
+### 10-fold Cross-Validation
+
+```{r}
+folds <- vfold_cv(train_data, v = 10)
+```
+
+```{r}
+rf_random_samples <- 
+  rf_workflow %>% 
+  fit_resamples(folds)
+```
+
+```{r}
+rf_random_samples
+```
+
+```{r}
+collect_metrics(rf_random_samples)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
