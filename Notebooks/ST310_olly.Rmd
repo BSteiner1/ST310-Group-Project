@@ -17,6 +17,7 @@ library(tidymodels)
 library(skimr)
 library(ranger)
 library(vip)
+library(knitr)
 ```
 # EDA & Data Manipulation
 
@@ -24,7 +25,7 @@ library(vip)
 
 ```{r}
 # Import and view head of training data
-path <- "/Users/Ollym/OneDrive/Documents/GitHub/ST310-Group-Project/Data/Stellar-Classification-Dataset.csv"
+path <- "C:/Users/bbste/Documents/LSE/ST310/ST310-Group-Project/Data/Stellar-Classification-Dataset.csv"
 raw_df <- read.csv(path)
 ```
 
@@ -236,15 +237,47 @@ logistic_augment %>%
 ### Evaluation Metric: Accuracy Score
 
 ```{r}
-accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+logistic_accuracy <- accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+logistic_accuracy
 ```
 #Include Confusion Matrix
+
+
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
+--------------------------------------------------
+
 
 
 # Step 3 Tree Model + Interpretation
 
 
-# Random Forest Model
+# Step 4 & 5 High-Dimensional Random Forest Model
 
 ## Workflow
 
@@ -323,6 +356,7 @@ rf_test <-
 rf_test
 ```
 
+
 # Random Forest With Interaction Terms 
 
 In order to increase dimensionality of the data, we will add interaction terms between the variables.
@@ -342,6 +376,7 @@ red_recipe <- train_data %>%
   prep()
 ```
 
+### Redshift interaction term variable importance.
 We fit a model based on `mtry = 4`, since this was the tuned parameter in the previous case.
 ```{r}
 #Defines Model
@@ -375,10 +410,13 @@ rf_red_pred_df <- rf_red_augment %>%
   select(class, .pred_class, .pred_GALAXY)
 ```
 
+We now see that some of the interaction terms such as `redshift_x_delta` and `redshift_x_z` are the most important factors.
+
 ```{r}
 #Prediction probability dataframe
 rf_red_pred_df
 ```
+### ROC/AUC for redshift interactions.
 
 ```{r}
 #Plots ROC curve
@@ -386,10 +424,11 @@ rf_red_augment %>%
   roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
   autoplot()
 ```
-
+### Accuracy Score.
 ```{r}
 #Calculates accuracy
-accuracy(rf_red_pred_df, as.factor(class), as.factor(.pred_class))
+rf_redshift_i <- accuracy(rf_red_pred_df, as.factor(class), as.factor(.pred_class))
+rf_redshift_i
 ```
 
 ## All Predictor Interaction Analysis
@@ -406,6 +445,7 @@ i_recipe <- train_data %>%
   prep()
 ```
 
+### All interactions variable importance
 And we now run and explore the model. 
 
 ```{r}
@@ -445,15 +485,29 @@ rf_i_pred_df <- rf_i_augment %>%
 rf_i_pred_df
 ```
 
+### ROC/AUC scores.
 ```{r}
 #Calculates and plots ROC curve
 rf_i_augment %>% 
   roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
   autoplot()
 ```
+### All interactions accuracy
 
 ```{r}
 #Calculates accuracy
-accuracy(rf_i_pred_df, as.factor(class), as.factor(.pred_class))
+rf_all_i <- accuracy(rf_i_pred_df, as.factor(class), as.factor(.pred_class))
+rf_all_i
 ```
-The lowest mis-classification rate we achieve is 2.4%, with the forest with no interaction terms. 
+Despite adding these interaction terms, the lowest mis-classification rate is achieved in the forest with no interaction terms, which has a 2.4%, error rate.
+
+# Summary
+
+## Model accuracy scores table.
+
+```{r}
+error_rates <- cbind(logistic_accuracy$.estimate[1], rf_test$.estimate[1], rf_redshift_i$.estimate[1], rf_all_i$.estimate[1])
+colnames(error_rates) <- c("Logistic", "RF no interaction", "RF redshift interaction", "RF All Interactions")
+error_rates |>
+  kable()
+```
