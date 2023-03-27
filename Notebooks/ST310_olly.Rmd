@@ -6,6 +6,42 @@ output:
 date: "21-03-2023"
 ---
 
+# Abstract
+
+In the following report we use a stellar classification dataset to classify stars based on its spectral characteristics. These include redshift, or how "red" or "blue a star is.
+
+We use a variable class that takes categorical values `STAR`, `GALAXY`, or `QUASAR OBJECT` as our outcome variable. We then use the following as predictors:
+
+- `alpha`: Right Ascension angle, which describes the vertical tilt of the planet.
+
+- `delta`: Declination Angle, which also describes the horizontal tilt of the planet.
+
+- `u`: The ultraviolet filter on the electro-magnetic (EM) spectrum .
+
+- `g`: The green filter on the EM spectrum.
+
+- `r`: The red filter on the EM spectrum.
+
+- `i`: Near infrared filter on the EM spectrum.
+
+- `z`: The Infrared filter on the EM spectrum.
+
+- `redshift`: The redshift value based on its wavelength.
+
+To achieve a complete analysis, we use a variety of models:
+
+- Model 1: We fit a baseline logistic regression, and assess model quality based on its classification accuracy
+
+- Model 2: We then implement another logistic regression with our own implementation of a gradient descent algorithm
+
+- Model 3: Finally, to achieve a higher prediction accuracy, we run a tuned random forest.
+
+- Model 4: To add dimensionality to our analysis, we next use a random forest with a varying number of interaction terms
+
+- Model 5: For a more interpretative model, we use a tuned decision tree, and visualize its branches.
+
+The following is our detailed analysis.
+
 # Import libraries
 
 ```{r setup, include=TRUE}
@@ -279,6 +315,8 @@ logistic_accuracy
 
 # Step 4 & 5 High-Dimensional Random Forest Model
 
+For steps 4 & 5, we also fitted a Quadratic and Linear Discriminant analysis, but we found little improvement in comparison to the models included in this report.
+
 ## Workflow
 
 We fit a random forest model, with the intention of achieving a lower mis-classification rate. We tune the `mtry` variable, which describes the size of the random sample of variables at each tree split.
@@ -505,9 +543,17 @@ Despite adding these interaction terms, the lowest mis-classification rate is ac
 
 ## Model accuracy scores table.
 
+The table below details the accuracy scores of each model we fitted:
+
 ```{r}
 error_rates <- cbind(logistic_accuracy$.estimate[1], rf_test$.estimate[1], rf_redshift_i$.estimate[1], rf_all_i$.estimate[1])
 colnames(error_rates) <- c("Logistic", "RF no interaction", "RF redshift interaction", "RF All Interactions")
 error_rates |>
   kable()
 ```
+
+## Final Comments 
+
+We see that the random forest with no interaction terms achieves the best accuracy score, so we choose this as our final model.
+
+Equipped with this, we have a highly accurate tool for predicting the type of stellar object based on the attributes in the data. Our analysis also shows that `redshift` is the biggest indicator on the class of an object.
