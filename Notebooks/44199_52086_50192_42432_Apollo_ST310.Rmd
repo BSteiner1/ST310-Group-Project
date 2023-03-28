@@ -1,0 +1,738 @@
+---
+title: "Apollo ST310 Group Project (44199, 52086, 50192, 42432)"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+date: "28-03-2023"
+---
+
+# Abstract
+
+In the following report we use a stellar classification dataset to classify stars based on its spectral characteristics. These include redshift, or how "red" or "blue a star is.
+
+We use a variable class that takes categorical values `STAR`, `GALAXY`, or `QUASAR OBJECT` as our outcome variable. We then use the following as predictors:
+
+- `alpha`: Right Ascension angle, which describes the vertical tilt of the planet.
+
+- `delta`: Declination Angle, which also describes the horizontal tilt of the planet.
+
+- `u`: The ultraviolet filter on the electro-magnetic (EM) spectrum .
+
+- `g`: The green filter on the EM spectrum.
+
+- `r`: The red filter on the EM spectrum.
+
+- `i`: Near infrared filter on the EM spectrum.
+
+- `z`: The Infrared filter on the EM spectrum.
+
+- `redshift`: The redshift value based on its wavelength.
+
+To achieve a complete analysis, we use a variety of models:
+
+- Model 1: We fit a baseline logistic regression, and assess model quality based on its classification accuracy.
+
+- Model 2: We then implement another logistic regression with our own implementation of a gradient descent algorithm.
+
+- Models 3-4: For a non-baseline interpretative model, we use a tuned and untuned version of a decision tree, and we visualize their branches.
+
+- Models 5-6-7: To try an achieve a higher prediction accuracy, we run QDA, LDA and a tuned random forest.
+
+- Models 8-9: To add dimensionality to our analysis, we next use a random forest with a varying number of interaction terms.
+
+The following is our detailed analysis.
+
+# Import libraries
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(GGally)
+library(yardstick)
+library(tidymodels)
+library(skimr)
+library(ranger)
+library(vip)
+library(knitr)
+library(tree)
+#install.packages("rpart.plot")
+library(rpart.plot)
+library(discrim)
+```
+# EDA & Data Manipulation
+
+## Import data
+
+```{r}
+# Import and view head of training data
+path <- "star_classification.csv"
+raw_df <- read.csv(path)
+```
+
+Overview of the raw data:
+```{r}
+raw_df <- raw_df[,c(14,1:13, 15:ncol(raw_df))]
+head(raw_df)
+```
+
+
+## Distribution of `class`
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Re-labelling `class`
+
+The distribution of classes is quite uneven, so since we want to use
+binary classification we combine the two smaller classes into one larger 
+`OTHER` class.
+
+```{r}
+raw_df[raw_df == 'QSO' | raw_df == 'STAR'] <- 'OTHER'
+```
+
+```{r}
+ggplot(raw_df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+## Subsample the data
+
+Since the class sizes are still quite uneven and we have many observations, we subsample the data to get
+even class sizes.
+
+```{r}
+# Filter the data by class and subsample
+galaxy_df <- raw_df[raw_df$class == "GALAXY", ]
+subsampled_galaxy_df <- galaxy_df[sample(nrow(galaxy_df), size = 40000, replace = FALSE),]
+
+other_df <- raw_df[raw_df$class == "OTHER", ]
+subsampled_other_df <- other_df[sample(nrow(other_df), size = 40000, replace = FALSE),]
+```
+
+```{r}
+# Create new DataFrame
+df <- rbind(subsampled_galaxy_df, subsampled_other_df)
+dim(df)
+```
+Updated plot of rebalanced classes
+```{r}
+ggplot(df,aes(x=factor(class))) +
+geom_bar() + 
+labs(title="Counts of Class Column", x="Class", y = "Count")+
+geom_text(aes(label=..count..),stat='count', vjust=-0.2)
+
+```
+
+
+## Summary statistics
+
+```{r}
+df %>% 
+  skimr::skim(colnames(df))
+```
+# Model Recipe
+
+## Train/Test Split
+Since we have a large dataset we use 80% of the data for training.
+
+```{r}
+set.seed(222)
+# Put 80% of the data into the training set 
+data_split <- initial_split(df, prop = 0.8)
+
+# Create data frames for the two sets:
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+## Create our recipe
+
+The dataset contains a lot of ID variable which do not contain useful information
+such as run_ID which is used to identify that specific scan.
+
+```{r}
+# Declare the ID variables
+IDs <- c("obj_ID", "run_ID", "rerun_ID", "cam_col", "field_ID", "spec_obj_ID", "plate", "MJD", "fiber_ID")
+```
+Next, we create a recipe that applies some pre-processing steps.
+```{r}
+# Define our model, and exclude the ID variables
+recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>% # ID's not treated as predictors
+  step_center(all_predictors(), -all_outcomes()) %>% # ensures mean 0
+  step_scale(all_predictors(), -all_outcomes()) %>% # ensures standard deviation of 1
+  prep()  # applies the pre-processing
+```
+A summary of which variables are treated as predictors.
+```{r}
+# Summary of the recipe
+summary(recipe)
+```
+
+This can then be extracted as follows
+```{r}
+train_data <- juice(recipe) # return variables from processed training data
+```
+
+We apply the same pre-processing to the test data.
+```{r}
+test_data <- recipe %>%
+  bake(test_data) # ensures that same pre-processing is used on test data.
+```
+
+
+
+
+# Logisitic Regression Model
+
+Since our data set involves classification, we use logistic regression as our
+baseline model. 
+
+```{r}
+# Define our logistic regression model
+logistic_model <- 
+  logistic_reg() %>% 
+  set_engine("glm")
+```
+
+## Workflow
+
+```{r}
+# Create our workflow
+logistic_wflow <- 
+  workflow() %>% 
+  add_model(logistic_model) %>% 
+  add_recipe(recipe)
+
+logistic_wflow
+```
+
+## Fit and explore the model
+
+We create a a fitted model by appling the workflow.
+```{r}
+# Fit the model
+logistic_fit <- 
+  logistic_wflow %>% 
+  fit(data = train_data)
+```
+
+The fitted values from our model.
+```{r}
+logistic_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+```
+
+Apply this fit to our test data
+```{r}
+logistic_augment <- 
+  augment(logistic_fit, test_data, type = "prob")
+```
+
+## Predictions
+
+Created predicted values and probabilities
+```{r}
+# DataFrame of prediction probabilities
+pred_df <- logistic_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+head(pred_df) 
+```
+
+## Evaluation of Model
+The main two metrics that we will use to compare our models are ROC/AUC 
+and accuracy.
+
+### Evaluation metric: ROC/AUC
+
+```{r}
+logistic_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+```{r}
+# Area Under Curve (AUC)
+logistic_augment %>% 
+  roc_auc(truth = as.factor(class), .pred_GALAXY)
+```
+### Confusion Matrix
+```{r}
+conf_mat(pred_df, truth=class, estimate=.pred_class)
+```
+### Evaluation Metric: Accuracy Score
+
+```{r}
+logistic_accuracy <- accuracy(pred_df, as.factor(class), as.factor(.pred_class))
+logistic_accuracy
+```
+For our baseline logistic regression, we get a misclassification rate of 
+approximately 20%. This will be used compare with the later models.
+
+# Gradient Descent (Logistic regression)
+
+```{r}
+#We transform the training and test data for our gradient descent.
+X_train <- as.matrix(train_data[,c(2:8, 14)])
+Y_train <- train_data$class
+Y_train <- ifelse(Y_train=="GALAXY", 1,0)
+
+X_test <- as.matrix(test_data[,c(2:8, 14)])
+Y_test <- test_data$class
+Y_test <- ifelse(Y_test=="GALAXY", 1,0)
+```
+
+## Gradient Descent Algorithm
+
+```{r}
+# Logistic regression function
+logistic <- function(X, beta) {
+  p <- 1 / (1 + exp(-X %*% beta))
+  return(p)
+}
+
+# Gradient of the logistic regression function
+grad_logistic <- function(X, y, beta) {
+  n <- length(y)
+  p <- logistic(X, beta)
+  grad <- t(X) %*% (p - y) / n
+  return(grad)
+}
+
+# Loss function of logistic
+loss <- function(X, y, beta) {
+  n <- length(y)
+  p <- logistic(X, beta)
+  loss <- -sum(y * log(p) + (1 - y) * log(1 - p)) / n
+  return(loss)
+}
+
+# Implementation of the gradient descent algorithm with a variable learning rate
+gradient_descent <- function(X, y, alpha, max_iter) {
+  beta <- rep(0, ncol(X))
+  for (i in 1:max_iter) {
+    alpha_i <- alpha / sqrt(i)  # learning rate
+    beta <- beta - alpha_i * grad_logistic(X, y, beta)
+    if (loss(X, y, beta) == "NaN"){
+      return(beta)
+    } 
+  }
+  return(beta)
+}
+beta_final <- gradient_descent(X_train,Y_train,10,10000)
+```
+
+## Predictions and Accuracy
+
+```{r}
+pred <-  1/(1+exp(-(X_test %*% beta_final)))
+pred <- ifelse(pred>0.5, 1,0) #Prediction Threshold
+grad_accuracy <- 1-sum(abs(pred-Y_test))/nrow(pred) #Accuracy Gradient Descent on test data.
+cat("Accuracy: ", grad_accuracy)
+```
+
+# Classification Tree
+
+```{r}
+tree_model <- decision_tree() %>% # We create the Classification Decision Tree
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+tree_workflow <- # We create a Workflow with the Tree model and our previous recipe
+  workflow() %>% 
+  add_model(tree_model) %>% 
+  add_recipe(recipe)
+
+tree_fit <-  # We fit the training data to our model
+  tree_workflow %>% 
+  fit(data = train_data)
+
+```
+
+## Baseline tree
+
+```{r}
+tree_fit %>% # Plotting the tree through rpart package
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+### Accuracy Score
+
+```{r}
+accuracy_untuned_tree <- augment(tree_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions.
+  accuracy(truth = as.factor(class), estimate = .pred_class)
+accuracy_untuned_tree
+```
+
+
+## Classification Tree With Tuning
+
+```{r}
+folds <- vfold_cv(train_data) #We partition our data into 10 folds for CV.
+
+tree_workflow_tuning<- # New workflow for the tuning.
+  workflow() %>% 
+  add_model(tree_model %>% set_args(cost_complexity = tune())) %>% # We establish that the parameter we want to tune is the cost complexity of the classification tree.
+  add_recipe(recipe)
+
+#We create a parameter grid that takes 5 values from 0.001 to 0.01
+param_grid <- grid_regular(cost_complexity(range = c(-3, -2)), levels = 5) 
+
+#We tune the cost complexity parameter of out decision tree for the 10 CV for the values in the parameter grid.
+tuning_results <- tune_grid(
+  tree_workflow_tuning,
+  resamples = folds, 
+  grid = param_grid, 
+  metrics = metric_set(accuracy))
+
+#Accuracy results for each value of the parameter
+autoplot(tuning_results)
+```
+```{r}
+best_complexity <- select_best(tuning_results) #We select the best value of the paremeter (in terms of accuracy)
+
+final_tree <- finalize_workflow(tree_workflow_tuning, best_complexity) %>% #Refitting the decision tree with the best parameter
+  fit(data = train_data)
+
+final_tree %>% #Plotting the new tree
+  extract_fit_engine() %>%
+  rpart.plot()
+
+```
+
+### Tuned tree Accuracy
+
+```{r}
+accuracy_tuned_tree <- augment(final_tree, new_data = test_data) %>% #Accuracy of the new tree on the test data
+  accuracy(truth = as.factor(class), estimate = .pred_class)
+accuracy_tuned_tree
+```
+### Confusion matrix
+
+```{r}
+augment(final_tree, new_data = test_data) %>% #Confusion Matrix of the final tree with the test data
+  conf_mat(truth = class, estimate = .pred_class) 
+```
+
+Even though It obtains a higher accuracy score than the Logistic Regression, we are only using one complex unique tree which could be overfitting the data.
+
+# Quadratic Discriminant Analysis
+
+```{r}
+qda_model <- discrim_quad() %>% #We create the Quadratic Discriminant Analysis model
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+qda_workflow <- # We create a Workflow with QDA model and our previous recipe
+  workflow() %>% 
+  add_model(qda_model) %>% 
+  add_recipe(recipe)
+
+qda_fit <-  # We fit the QDA model with the training data
+  qda_workflow %>% 
+  fit(data = train_data)
+
+```
+## Accuracy Score and Confusion Matrix
+
+```{r}
+augment(qda_fit, new_data = test_data) %>% #Confusion Matrix on the test data.
+  conf_mat(truth = class, estimate = .pred_class) 
+```
+
+```{r}
+qda_accuracy <- augment(qda_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions on the test data
+  accuracy(truth = class, estimate = .pred_class)
+qda_accuracy
+```
+We observe how it achieves a low accuracy score and an unbalanced confusion matrix.
+
+# Linear Discriminant Analysis
+
+```{r}
+lda_model <- discrim_linear() %>% #We create the Linear Discriminant Analysis model
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+lda_workflow <-  # We create a Workflow with the LDA model and our previous recipe
+  workflow() %>% 
+  add_model(lda_model) %>% 
+  add_recipe(recipe)
+
+lda_fit <-  # We fit the LDA model with the training data
+  lda_workflow %>% 
+  fit(data = train_data)
+```
+## Accuracy Score and Confusion Matrix
+
+```{r}
+augment(lda_fit, new_data = test_data) %>% # Confusion Matrix on the test data.
+  conf_mat(truth = class, estimate = .pred_class) 
+```
+
+```{r}
+lda_accuracy <- augment(lda_fit, new_data = test_data) %>% # We calculate the accuracy of our predictions on the test data
+  accuracy(truth = class, estimate = .pred_class) 
+lda_accuracy
+```
+Although performing better than QDA the accuracy is lower than the Logistic Regression. The Confusion matrix is more balanced, meaning that it makes on average the same mistakes for both classes.
+
+# High-Dimensional Random Forest Model
+
+For steps 4 & 5, we also fitted a Quadratic and Linear Discriminant analysis, but we found little improvement in comparison to the models included in this report.
+
+## Workflow
+
+We fit a random forest model, with the intention of achieving a lower mis-classification rate. We tune the `mtry` variable, which describes the size of the random sample of variables at each tree split.
+
+```{r}
+#Defines Model
+rf_model <- rand_forest(mode = "classification", trees = 20, mtry = tune()) %>% 
+  set_engine("ranger", importance = "impurity")
+```
+
+```{r}
+#Defines Workflow
+rf_workflow <- 
+  workflow() %>% 
+  add_model(rf_model) %>% ## Add newly defined model
+  add_recipe(recipe) ## Adds recipe specified earlier
+```
+
+To tune the variables, we use a 2-fold cross validation. Any larger and it takes an unreasonable amount of time to compute.
+```{r}
+#Defines cross validation 
+r_cv <- vfold_cv(train_data, v = 2)
+```
+
+
+## Fit model and examine variable importance
+
+To visualise variable importance, which will inform interaction terms later, we fit the model to the dataframe.
+
+```{r}
+#Fits model for variables importance
+rf_workflow %>% 
+  fit(df) %>% ## Fits model
+  extract_fit_parsnip() %>% ## Extracts coefficient intercepts 
+  vip(num_features = 8) + ## Extracts top 8
+  labs(title = "Random forest variable importance") ##Labels graph
+```
+
+## Predictions
+
+To make predictions, we fit the model with a tune grid, which will allow us to cross validate and choose the best `mtry`.
+
+```{r}
+# Fit the model
+rf_fit <- tune_grid( 
+  rf_workflow, # Specifies Workflow
+  r_cv, #Specifies Cross validation procedure
+  metrics = metric_set(roc_auc) ## selects based on roc_auc
+)
+```
+
+We now select the model with best results
+```{r}
+rf_best <- rf_fit %>%
+  select_best()
+```
+
+And finalise the model.
+```{r}
+rf_final <- 
+  finalize_model(
+    rf_model,
+    rf_best)
+rf_final
+```
+We now fit the data to the test and extract the performance statistics
+```{r}
+#Fits final model
+rf_test <- 
+  rf_workflow %>%
+  update_model(rf_final) %>%
+  last_fit(data_split) %>%
+  collect_metrics()
+rf_test
+```
+
+
+# Random Forest With Interaction Terms 
+
+In order to increase dimensionality of the data, we will add interaction terms between the variables.
+
+## Redshift Interaction Analysis
+
+Since redshift was the most important variable according to previous analysis, we will add one interaction for redshift, multiplied by each predictor.
+
+```{r}
+#Defines Recipe
+red_recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>% 
+  step_center(all_predictors(), -all_outcomes()) %>% ## Normalises
+  step_scale(all_predictors(), -all_outcomes()) %>%  ## ----------
+  step_interact(terms = ~ redshift:all_predictors()) %>% ## Adds interaction terms
+  prep()
+```
+
+### Redshift interaction term variable importance.
+We fit a model based on `mtry = 4`, since this was the tuned parameter in the previous case.
+```{r}
+#Defines Model
+rf_red_model <- rand_forest(mode = "classification", mtry = 3, trees = 20) %>% 
+  set_engine("ranger", importance = "impurity") 
+#Defines Workflow
+rf_red_workflow <- 
+  workflow() %>% 
+  add_model(rf_red_model) %>% #Specifies model  
+  add_recipe(red_recipe) #Specifies recipe
+#Fits model to find variable importance as before
+rf_red_workflow %>% 
+  fit(df) %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 8) +
+  labs(title = "Random forest variable importance")
+# Fit the model for predictions
+rf_red_fit <- 
+  rf_red_workflow %>% 
+  fit(data = train_data)
+#Augments model based on test data
+rf_red_augment <- 
+  augment(rf_red_fit, test_data, type = "prob")
+#DataFrame of prediction probabilities
+rf_red_pred_df <- rf_red_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+We now see that some of the interaction terms such as `redshift_x_delta` and `redshift_x_z` are the most important factors.
+
+```{r}
+#Prediction probability dataframe
+rf_red_pred_df
+```
+### ROC/AUC for redshift interactions.
+
+```{r}
+#Plots ROC curve
+rf_red_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+### Accuracy Score.
+```{r}
+#Calculates accuracy
+rf_redshift_i <- accuracy(rf_red_pred_df, as.factor(class), as.factor(.pred_class))
+rf_redshift_i
+```
+
+## All Predictor Interaction Analysis
+
+Next, to increase dimensionality further, we will add all possible two-way predictor variables.
+```{r}
+#Defines new recipe
+i_recipe <- train_data %>%
+  recipe(class ~ .) %>% 
+  update_role(all_of(IDs), new_role = "ID") %>%
+  step_center(all_predictors(), -all_outcomes()) %>%
+  step_scale(all_predictors(), -all_outcomes()) %>%
+  step_interact(terms = ~ all_predictors():all_predictors()) %>% #Adds all two-way predictor variables
+  prep()
+```
+
+### All interactions variable importance
+And we now run and explore the model. 
+
+```{r}
+#Defines Model
+rf_i_model <- rand_forest(mode = "classification", mtry = 3, trees = 20) %>% 
+  set_engine("ranger", importance = "impurity")
+#Defines Workflow
+rf_i_workflow <- 
+  workflow() %>% 
+  add_model(rf_i_model) %>% 
+  add_recipe(i_recipe)
+#Runs model for variable importance
+rf_i_workflow %>% 
+  fit(df) %>%
+  extract_fit_parsnip() %>% 
+  vip(num_features = 8) +
+  labs(title = "Random forest variable importance")
+#Fits the model for predictions
+rf_i_fit <- 
+  rf_i_workflow %>% 
+  fit(data = train_data)
+#Augments model based on new data 
+rf_i_augment <- 
+  augment(rf_i_fit, test_data, type = "prob")
+#DataFrame of prediction probabilities
+rf_i_pred_df <- rf_i_augment %>%
+  select(class, .pred_class, .pred_GALAXY)
+```
+
+```{r}
+#Prints DataFrame of prediction probabilities
+rf_i_pred_df
+```
+
+### ROC/AUC scores.
+```{r}
+#Calculates and plots ROC curve
+rf_i_augment %>% 
+  roc_curve(truth = as.factor(class), .pred_GALAXY) %>% 
+  autoplot()
+```
+### All interactions accuracy
+
+```{r}
+#Calculates accuracy
+rf_all_i <- accuracy(rf_i_pred_df, as.factor(class), as.factor(.pred_class))
+rf_all_i
+```
+Despite adding these interaction terms, the lowest mis-classification rate is achieved in the forest with no interaction terms, which has a 2.4%, error rate.
+
+# Summary
+
+## Model accuracy scores table.
+
+The table below details the accuracy scores of each model we fitted:
+
+```{r}
+error_rates <- cbind(logistic_accuracy$.estimate[1],grad_accuracy, accuracy_untuned_tree$.estimate[1],accuracy_tuned_tree$.estimate[1],lda_accuracy$.estimate[1], qda_accuracy$.estimate[1], rf_test$.estimate[1], rf_redshift_i$.estimate[1], rf_all_i$.estimate[1]) 
+error_rates <- round(error_rates,3)
+colnames(error_rates) <- c("Logistic","Gradient Descent", "Untuned Tree","Tuned Tree","LDA","QDA", "RF no interaction", "RF redshift interaction", "RF All Interactions")
+error_rates |>
+  kable()
+```
+
+## Final Comments 
+
+We see that the random forest with no interaction terms achieves the best accuracy score, so we choose this as our final model.
+
+Equipped with this, we have a highly accurate tool for predicting the type of stellar object based on the attributes in the data. Our analysis also shows that `redshift` is the biggest indicator on the class of an object.
+
+A potential area of improvement for future would be to learn more about what the variables truly represent. While the standardisation of the data makes the units more interpretable, we are still unable to determine the true causal relationships between variables. Nonetheless, if we solely focus on predictions then the Random Forest model proves to be a useful tool.
+
+
+
+
+
+
+
