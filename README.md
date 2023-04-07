@@ -3,8 +3,8 @@
  
 A coursework project to use Machine Learning on a dataset 
 
+[Stellar Classification Final.pdf](https://github.com/BSteiner1/ST310-Group-Project/files/11178852/Stellar.Classification.Final.pdf)
 
-[Stellar Classification Final.pdf](https://github.com/BSteiner1/ST310-Group-Project/files/11083329/Stellar.Classification.Final.pdf)
 
 ❓ Questions
 
